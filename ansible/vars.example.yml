@@ -1,0 +1,11 @@
+# Copy to ansible/local-vars.yml, then replace the examples.
+platform_user: platform
+platform_ssh_public_key: "ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY"
+admin_cidrs:
+  - "198.51.100.10/32"  # Your public IP, not the VPS IP.
+# Optional additional admin IPs must also use narrow CIDRs.
+# Cluster API access uses an SSH tunnel; port 6443 stays closed publicly.
+backups_enabled: false
+# Enable only after creating the external backup repository and local secret files:
+# backup_env_file: /absolute/protected/path/backup.env
+# backup_password_file: /absolute/protected/path/restic-password

@@ -1,0 +1,16 @@
+[Unit]
+Description=Encrypted offsite backup of personal Kubernetes control-plane state
+ConditionPathExists=/etc/personal-infra/backup.env
+ConditionPathExists=/etc/personal-infra/restic-password
+After=k3s.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+EnvironmentFile=/etc/personal-infra/backup.env
+ExecStart=/usr/local/sbin/backup-personal-cluster
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

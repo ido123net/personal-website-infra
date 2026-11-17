@@ -1,0 +1,41 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: Ruff lint
+        entry: uv run --locked ruff check
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: Ruff format
+        entry: uv run --locked ruff format --check
+        language: system
+        types: [python]
+      - id: ty
+        name: ty check
+        entry: uv run --locked ty check
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: terraform-fmt
+        name: Terraform format
+        entry: terraform -chdir=terraform fmt -check -recursive
+        language: system
+        pass_filenames: false
+        files: (\.tf|\.tftest\.hcl)$
+      - id: yaml
+        name: YAML lint
+        entry: uv run --locked yamllint
+        language: system
+        files: \.(yml|yaml)$
+      - id: ansible-syntax
+        name: Ansible syntax
+        entry: uv run --locked ansible-playbook -i ansible/inventory.example.yml ansible/bootstrap.yml --syntax-check
+        language: system
+        pass_filenames: false
+        files: ^ansible/.*\.yml$
+      - id: bash-syntax
+        name: Bash syntax
+        entry: bash -n
+        language: system
+        types: [shell]

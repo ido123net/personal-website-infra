@@ -1,0 +1,8 @@
+all:
+  children:
+    platform:
+      hosts:
+        personal:
+          ansible_host: 192.0.2.10
+          ansible_user: root
+          # Or use an existing sudo-capable user with --ask-become-pass if needed.

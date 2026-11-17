@@ -1,0 +1,5 @@
+apiVersion: v2
+name: personal-platform
+version: 0.1.0
+description: Shared HTTP-01 certificate issuers for the personal K3s platform
+type: application

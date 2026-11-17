@@ -1,0 +1,12 @@
+extends: default
+rules:
+  document-start: disable
+  line-length: disable
+  truthy:
+    allowed-values: ['true', 'false']
+ignore: |
+  .venv/
+  .terraform/
+  .git/
+  terraform/charts/platform/templates/
+  ansible/templates/

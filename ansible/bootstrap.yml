@@ -1,0 +1,262 @@
+---
+- name: Bootstrap a dedicated single-node personal Kubernetes server
+  hosts: platform
+  become: true
+  gather_facts: true
+  vars:
+    k3s_version: "v1.36.6+k3s1"
+    platform_user: platform
+    backups_enabled: false
+    k3s_binary_name: "{{ 'k3s' if ansible_facts.architecture == 'x86_64' else 'k3s-arm64' }}"
+    k3s_checksum_arch: "{{ 'amd64' if ansible_facts.architecture == 'x86_64' else 'arm64' }}"
+    k3s_release_url: "https://github.com/k3s-io/k3s/releases/download/{{ k3s_version }}"
+  pre_tasks:
+    - name: Validate dedicated Ubuntu host and required configuration
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.architecture in ['x86_64', 'aarch64']
+          - ansible_facts.memtotal_mb >= 3500
+          - ansible_facts.processor_vcpus >= 2
+          - ansible_facts.swaptotal_mb == 0
+          - platform_user is match('^[a-z][a-z0-9_-]{0,30}$')
+          - platform_user != 'root'
+          - platform_ssh_public_key is defined
+          - platform_ssh_public_key is match('^ssh-(ed25519|rsa) [A-Za-z0-9+/=]+')
+          - "'REPLACE' not in platform_ssh_public_key"
+          - admin_cidrs is defined
+          - admin_cidrs | length > 0
+        fail_msg: "Use a fresh Ubuntu 24.04 VPS with 2 CPUs, 4 GB RAM, no swap, a real SSH public key and explicit admin CIDRs."
+    - name: Check admin networks without touching host networking
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "import ipaddress,sys; nets=[ipaddress.ip_network(v, strict=True) for v in sys.argv[1:]]; assert all(n.prefixlen >= (24 if n.version == 4 else 64) for n in nets), 'Use /24 or narrower IPv4 and /64 or narrower IPv6 admin networks'"
+          - "{{ item }}"
+      loop: "{{ admin_cidrs }}"
+      changed_when: false
+      check_mode: false
+    - name: Ensure the current SSH source is in the administrator networks
+      become: false
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "import ipaddress,os,sys; peer=ipaddress.ip_address(os.environ['SSH_CONNECTION'].split()[0]); nets=[ipaddress.ip_network(v) for v in sys.argv[1].split(',')]; assert any(peer in net for net in nets), 'Current SSH client is outside admin_cidrs; refusing to enable the firewall'"
+          - "{{ admin_cidrs | join(',') }}"
+      changed_when: false
+      check_mode: false
+    - name: Require local backup secret files when enabling backups
+      ansible.builtin.assert:
+        that:
+          - backup_env_file is defined
+          - backup_password_file is defined
+          - lookup('ansible.builtin.file', backup_env_file) | length > 0
+          - lookup('ansible.builtin.file', backup_password_file) | length >= 32
+        fail_msg: "Provide protected backup.env and a restic password of at least 32 characters."
+      no_log: true
+      when: backups_enabled | bool
+  tasks:
+    - name: Install host dependencies
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, ufw, sqlite3, restic, python3, sudo, util-linux]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Create platform administrator
+      ansible.builtin.user:
+        name: "{{ platform_user }}"
+        shell: /bin/bash
+        groups: sudo
+        append: true
+        create_home: true
+    - name: Create SSH directory
+      ansible.builtin.file:
+        path: "/home/{{ platform_user }}/.ssh"
+        state: directory
+        owner: "{{ platform_user }}"
+        group: "{{ platform_user }}"
+        mode: "0700"
+    - name: Install administrator public key
+      ansible.builtin.copy:
+        content: |
+          {{ platform_ssh_public_key }}
+        dest: "/home/{{ platform_user }}/.ssh/authorized_keys"
+        owner: "{{ platform_user }}"
+        group: "{{ platform_user }}"
+        mode: "0600"
+    - name: Allow key-authenticated administrator to use sudo
+      ansible.builtin.copy:
+        content: |
+          {{ platform_user }} ALL=(ALL) NOPASSWD:ALL
+        dest: "/etc/sudoers.d/{{ platform_user }}"
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
+    - name: Disable SSH password authentication
+      ansible.builtin.copy:
+        content: |
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+        dest: /etc/ssh/sshd_config.d/00-personal-platform.conf
+        mode: "0644"
+        validate: /usr/sbin/sshd -t -f %s
+      notify: Reload ssh
+    - name: Persist required kernel modules
+      ansible.builtin.copy:
+        content: |
+          overlay
+          br_netfilter
+        dest: /etc/modules-load.d/k3s.conf
+        mode: "0644"
+    - name: Load networking kernel module
+      ansible.builtin.command: /sbin/modprobe br_netfilter
+      changed_when: false
+    - name: Configure Kubernetes networking sysctls
+      ansible.builtin.copy:
+        content: |
+          net.ipv4.ip_forward=1
+          net.bridge.bridge-nf-call-iptables=1
+          net.bridge.bridge-nf-call-ip6tables=1
+          vm.panic_on_oom=0
+          vm.overcommit_memory=1
+          kernel.panic=10
+          kernel.panic_on_oops=1
+        dest: /etc/sysctl.d/90-k3s.conf
+        mode: "0644"
+      notify: Apply sysctls
+    - name: Apply sysctls before starting Kubernetes
+      ansible.builtin.meta: flush_handlers
+    - name: Default firewall to deny incoming connections
+      ansible.builtin.command: ufw default deny incoming
+      register: firewall_default
+      changed_when: "'changed' in firewall_default.stdout"
+    - name: Allow outgoing connections
+      ansible.builtin.command: ufw default allow outgoing
+      register: firewall_outgoing
+      changed_when: "'changed' in firewall_outgoing.stdout"
+    - name: Allow SSH only from administrator networks
+      ansible.builtin.command:
+        argv: [ufw, allow, from, "{{ item }}", to, any, port, '22', proto, tcp]
+      loop: "{{ admin_cidrs }}"
+      register: firewall_ssh
+      changed_when: "'added' in firewall_ssh.stdout"
+    - name: Allow public HTTP and HTTPS
+      ansible.builtin.command:
+        argv: [ufw, allow, "{{ item }}/tcp"]
+      loop: ['80', '443']
+      register: firewall_web
+      changed_when: "'added' in firewall_web.stdout"
+    - name: Allow internal Kubernetes networks
+      ansible.builtin.command:
+        argv: [ufw, allow, from, "{{ item }}"]
+      loop: ['10.42.0.0/16', '10.43.0.0/16']
+      register: firewall_cluster
+      changed_when: "'added' in firewall_cluster.stdout"
+    - name: Allow routed pod traffic
+      ansible.builtin.command:
+        argv: [ufw, route, allow, from, '10.42.0.0/16']
+      register: firewall_route
+      changed_when: "'added' in firewall_route.stdout"
+    - name: Enable host firewall after SSH rules exist
+      ansible.builtin.command: ufw --force enable
+      register: firewall_enable
+      changed_when: "'reloaded' not in firewall_enable.stdout"
+    - name: Create private Kubernetes configuration directory
+      ansible.builtin.file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: "0700"
+    - name: Install persistent Kubernetes configuration
+      ansible.builtin.template:
+        src: k3s-config.yaml.j2
+        dest: /etc/rancher/k3s/config.yaml
+        mode: "0600"
+      notify: Restart k3s
+    - name: Read checksums from the pinned upstream release
+      ansible.builtin.uri:
+        url: "{{ k3s_release_url }}/sha256sum-{{ k3s_checksum_arch }}.txt"
+        return_content: true
+      register: k3s_checksums
+      check_mode: false
+    - name: Install checksum-verified pinned K3s binary
+      ansible.builtin.get_url:
+        url: "{{ k3s_release_url }}/{{ k3s_binary_name }}"
+        dest: /usr/local/bin/k3s
+        mode: "0755"
+        checksum: "sha256:{{ (k3s_checksums.content.splitlines() | select('search', ' ' ~ k3s_binary_name ~ '$') | first).split()[0] }}"
+      notify: Restart k3s
+    - name: Install systemd service
+      ansible.builtin.template:
+        src: k3s.service.j2
+        dest: /etc/systemd/system/k3s.service
+        mode: "0644"
+      notify: Restart k3s
+    - name: Enable and start Kubernetes
+      ansible.builtin.systemd_service:
+        name: k3s
+        enabled: true
+        state: started
+        daemon_reload: true
+    - name: Apply service updates before checking readiness
+      ansible.builtin.meta: flush_handlers
+    - name: Wait for the node to become ready
+      ansible.builtin.command: /usr/local/bin/k3s kubectl wait --for=condition=Ready node --all --timeout=300s
+      changed_when: false
+      when: not ansible_check_mode
+    - name: Create private platform configuration directory
+      ansible.builtin.file:
+        path: /etc/personal-infra
+        state: directory
+        mode: "0700"
+    - name: Install cluster backup script
+      ansible.builtin.copy:
+        src: ../scripts/backup-cluster.sh
+        dest: /usr/local/sbin/backup-personal-cluster
+        mode: "0700"
+    - name: Install optional backup credentials
+      ansible.builtin.copy:
+        src: "{{ backup_env_file }}"
+        dest: /etc/personal-infra/backup.env
+        mode: "0600"
+      no_log: true
+      when: backups_enabled | bool
+    - name: Install optional backup encryption password
+      ansible.builtin.copy:
+        src: "{{ backup_password_file }}"
+        dest: /etc/personal-infra/restic-password
+        mode: "0600"
+      no_log: true
+      when: backups_enabled | bool
+    - name: Install backup systemd units
+      ansible.builtin.copy:
+        src: "../systemd/{{ item }}"
+        dest: "/etc/systemd/system/{{ item }}"
+        mode: "0644"
+      loop: [personal-cluster-backup.service, personal-cluster-backup.timer]
+      notify: Reload systemd
+    - name: Apply timer unit changes
+      ansible.builtin.meta: flush_handlers
+    - name: Enable backups only when explicitly configured
+      ansible.builtin.systemd_service:
+        name: personal-cluster-backup.timer
+        enabled: "{{ backups_enabled | bool }}"
+        state: "{{ 'started' if backups_enabled | bool else 'stopped' }}"
+        daemon_reload: true
+  handlers:
+    - name: Reload ssh
+      ansible.builtin.systemd_service:
+        name: ssh
+        state: reloaded
+    - name: Apply sysctls
+      ansible.builtin.command: sysctl --system
+      changed_when: true
+    - name: Restart k3s
+      ansible.builtin.systemd_service:
+        name: k3s
+        state: restarted
+        daemon_reload: true
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true

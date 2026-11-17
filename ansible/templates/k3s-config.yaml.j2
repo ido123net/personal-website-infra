@@ -1,0 +1,8 @@
+node-name: personal-platform
+write-kubeconfig-mode: "0600"
+secrets-encryption: true
+protect-kernel-defaults: true
+tls-san:
+  - "127.0.0.1"
+# Traefik, ServiceLB, CoreDNS and local-path storage are K3s defaults.
+# The API listens for pods too; UFW closes port 6443 to public clients.
