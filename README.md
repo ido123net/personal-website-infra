@@ -134,3 +134,26 @@ The daily timer snapshots SQLite through its backup API and includes the K3s tok
 This is a single-node personal cluster. A node failure or upgrade takes applications offline; local persistent volumes do not survive host loss without application backups. K3s itself has no license fee and the bundled ingress uses the node's ports, avoiding a separately billed cloud load balancer. Budget from the selected VPS, domain renewal, and actual backup storage; no provider price is encoded here. Heavy monitoring/GitLab workloads or high availability require more resources and a new capacity plan.
 
 Versions and sources: K3s `v1.36.6+k3s1`, cert-manager `v1.21.3`, Helm Terraform provider `3.3.x` locked in `.terraform.lock.hcl`. Read the official [K3s configuration](https://docs.k3s.io/installation/configuration), [backup/restore](https://docs.k3s.io/datastore/backup-restore), [networking](https://docs.k3s.io/networking/networking-services), [cert-manager Helm installation](https://cert-manager.io/docs/installation/helm/), and [restic repositories](https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html).
+
+## Private Higayon monitoring
+
+Deploy the Higayon application module first. It owns the metrics service, dashboard
+ConfigMap, and existing Google runtime Secret in the `higayon` namespace.
+Set `monitoring_enabled = true` and `monitoring_owner_email` in your private platform
+tfvars, then plan and apply the platform module. The Helm release mounts the app's
+two dashboards and references only the two Google OAuth keys in the Secret.
+
+Prometheus discovers app pods by DNS every 15 seconds. It scrapes every 15 seconds
+and retains up to 14 days or 2 GiB of persisted blocks, whichever comes first.
+Its 4 GiB volume leaves room for the write-ahead log and compaction. Grafana's
+provisioned dashboards are restored from the app ConfigMap on each restart.
+
+With the kubeconfig tunnel running, use
+`kubectl -n higayon port-forward svc/grafana 3300:3000` and open
+[the private Grafana preview](http://localhost:3300). Add
+`http://localhost:3300/login/google` and `https://grafana.idofrenkel.com/login/google`
+to the OAuth client's authorized redirect URIs. Verify owner access to both
+dashboards and sign-in denial in a separate browser profile using a second Google
+account. After verification, enable `grafana_ingress_enabled`, apply, publish
+the Grafana A record to the node, and check the production TLS certificate.
+Prometheus and the metrics service have no ingress.

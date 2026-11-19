@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 4Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: prometheus}
+  template:
+    metadata:
+      labels: {app: prometheus}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65534, fsGroup: 65534}
+      containers:
+        - name: prometheus
+          image: {{ .Values.prometheusImage }}
+          args:
+            - --config.file=/etc/config/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=14d
+            - --storage.tsdb.retention.size=2GiB
+          ports: [{containerPort: 9090}]
+          readinessProbe: {httpGet: {path: /-/ready, port: 9090}}
+          resources:
+            requests: {cpu: 30m, memory: 96Mi}
+            limits: {memory: 384Mi}
+          volumeMounts:
+            - {name: config, mountPath: /etc/config, readOnly: true}
+            - {name: data, mountPath: /prometheus}
+      volumes:
+        - {name: config, configMap: {name: monitoring-config}}
+        - {name: data, persistentVolumeClaim: {claimName: prometheus-data}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+spec:
+  selector: {app: prometheus}
+  ports: [{port: 9090}]

@@ -1,0 +1,6 @@
+hostname: grafana.example.com
+ownerEmail: ""
+publicIngress: false
+runtimeSecret: higayon-runtime
+prometheusImage: prom/prometheus:v3.16.0
+grafanaImage: grafana/grafana:13.3.1

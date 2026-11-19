@@ -8,5 +8,5 @@ ignore: |
   .venv/
   .terraform/
   .git/
-  terraform/charts/platform/templates/
+  terraform/charts/*/templates/
   ansible/templates/

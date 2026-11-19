@@ -1,0 +1,4 @@
+apiVersion: v2
+name: personal-monitoring
+description: Single-node Prometheus and owner-only Grafana for Higayon
+version: 0.1.0

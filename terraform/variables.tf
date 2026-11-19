@@ -40,3 +40,19 @@ variable "acme_email" {
     error_message = "Use a valid ACME account email address."
   }
 }
+
+variable "monitoring_enabled" {
+  type    = bool
+  default = false
+}
+
+variable "monitoring_owner_email" {
+  type    = string
+  default = ""
+}
+
+variable "grafana_ingress_enabled" {
+  description = "Publish after verifying Google sign-in and denial for a second account."
+  type        = bool
+  default     = false
+}

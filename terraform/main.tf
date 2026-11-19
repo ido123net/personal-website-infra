@@ -45,3 +45,25 @@ resource "helm_release" "platform" {
     ingressClass = "traefik"
   })]
 }
+
+resource "helm_release" "monitoring" {
+  count     = var.monitoring_enabled ? 1 : 0
+  name      = "personal-monitoring"
+  namespace = "higayon"
+  chart     = "${path.module}/charts/monitoring"
+  version   = yamldecode(file("${path.module}/charts/monitoring/Chart.yaml")).version
+  wait      = true
+  atomic    = true
+  timeout   = 480
+  values = [yamlencode({
+    hostname      = "grafana.${var.domain}"
+    ownerEmail    = var.monitoring_owner_email
+    publicIngress = var.grafana_ingress_enabled
+  })]
+  lifecycle {
+    precondition {
+      condition     = can(regex("^[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}$", var.monitoring_owner_email))
+      error_message = "Configure the owner's exact lowercase Google email."
+    }
+  }
+}
